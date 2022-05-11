@@ -33,7 +33,7 @@ Note, that I'm not quite done with this yet. Attempting to call other functions 
 
 ## Credit
 
-I would like to give to those who have contributed to the CImg library, as CImg is what the image manipulation
+I would like to give credit to those who have contributed to the CImg library, as CImg is what the image manipulation
 is done with in this repository. Here is the link to the CImg repo.
 https://github.com/dtschump/CImg
 
