@@ -1,5 +1,6 @@
-CIMG=$CIMG_PATH
+CIMG_PATH=~/Documents/GitHub/CImg# You might need to change this
+LIBS=-L/usr/X11Rd/lib -lm -lpthread -lX11
 
-all:
-	g++ inserter.cpp -L/usr/X11Rd/lib -lm -lpthread -lX11 -I $(CIMG) -o inserter
-	g++ extractor.cpp -L/usr/X11Rd/lib -lm -lpthread -lX11 -I $(CIMG) -o extractor
+all: inserter.cpp extractor.cpp
+	g++ inserter.cpp $(LIBS) -I $(CIMG_PATH) -o inserter
+	g++ extractor.cpp $(LIBS) -I $(CIMG_PATH) -o extractor
