@@ -17,6 +17,26 @@ namespace stegelf
 	struct ObjFile
 	{
 	private:
+		enum x86_64_relocationTypes
+		{
+			x86_64_NONE      = 0,	/* No reloc */
+			x86_64_64        = 1,	/* Direct 64 bit  */
+			x86_64_PC32      = 2,	/* PC relative 32 bit signed */
+			x86_64_GOT32     = 3,	/* 32 bit GOT entry */
+			x86_64_PLT32     = 4,	/* 32 bit PLT address */
+			x86_64_COPY      = 5,	/* Copy symbol at runtime */
+			x86_64_GLOB_DAT  = 6,	/* Create GOT entry */
+			x86_64_JUMP_SLOT = 7,	/* Create PLT entry */
+			x86_64_RELATIVE  = 8,	/* Adjust by program base */
+			x86_64_GOTPCREL  = 9,	/* 32 bit signed pc relative offset to GOT */
+			x86_64_32        = 10,	/* Direct 32 bit zero extended */
+			x86_64_32S       = 11,	/* Direct 32 bit sign extended */
+			x86_64_16        = 12,	/* Direct 16 bit zero extended */
+			x86_64_PC16      = 13,	/* 16 bit sign extended pc relative */
+			x86_64_8         = 14,	/* Direct 8 bit sign extended  */
+			x86_64_PC8       = 15,	/* 8 bit sign extended pc relative */
+			x86_64_PC64      = 24	/* Place relative 64-bit signed */
+		};
 		int objsize; // Will contain the full size of the object file in bytes and be used
 		             //		to determine how much space to allocate when extracting binary
 		union
@@ -35,6 +55,8 @@ namespace stegelf
 		const char *strtab;         // Will point to the base address of the string table
 		uint64_t pageSize;          // Will be populated with the page size of the system
 		uint8_t *textBase;          // Will point to the base address of the text section
+		uint8_t *dataBase;          // Will point to the base address of the data section
+		uint8_t *rodataBase;        // Will point to the base address of the rodata section
 
 	private:
 		// Page aligns n, rounding up
@@ -50,7 +72,7 @@ namespace stegelf
 				std::string sectionName(shstrtab + sections[i].sh_name);
 				if (name == sectionName && sections[i].sh_size != 0) return sections + i;
 			}
-			return NULL;
+			return nullptr;
 		}
 		// Initializes the addresses for various tables and sections, important thing is that it finds the
 		//		text section and creates a copy of it that is executable (and readable).
@@ -63,20 +85,42 @@ namespace stegelf
 			sections = (const Elf64_Shdr*)(obj.base + obj.hdr->e_shoff);
 			shstrtab = (const char*)(obj.base + sections[obj.hdr->e_shstrndx].sh_offset);
 
-			// Find symbol table in the sections table
+			// Find symbol table entry in the sections table
 			const Elf64_Shdr *symtab_hdr = lookupSection(".symtab");
 			symbols = (const Elf64_Sym*)(obj.base + symtab_hdr->sh_offset);
 			numSymbols = symtab_hdr->sh_size / symtab_hdr->sh_entsize;
 
-			// Find string table in the sections table
+			// Find string table entry in the sections table
 			const Elf64_Shdr *strtab_hdr = lookupSection(".strtab");
 			strtab = (const char*)(obj.base + strtab_hdr->sh_offset);
 
-			// Find section, create executable + readable copy
+			// Find the text entry in the sections table
 			const Elf64_Shdr *text_hdr = lookupSection(".text");
-			textBase = (uint8_t*)mmap(NULL, pageAlign(text_hdr->sh_size), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-			memcpy(textBase, obj.base + text_hdr->sh_offset, text_hdr->sh_size);
-			mprotect(textBase, pageAlign(text_hdr->sh_size), PROT_READ | PROT_EXEC);
+			if (text_hdr != nullptr)
+			{	// Allocate memory for text if it exists
+				textBase = (uint8_t*)mmap(nullptr, pageAlign(text_hdr->sh_size), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+				// Create duplicate of text section with read and execute permissions
+				memcpy(textBase, obj.base + text_hdr->sh_offset, text_hdr->sh_size);
+				mprotect(textBase, pageAlign(text_hdr->sh_size), PROT_READ | PROT_EXEC);
+			}
+
+			// Find the data entry in the sections table
+			const Elf64_Shdr *data_hdr = lookupSection(".data");
+			if (data_hdr != nullptr)
+			{	// Allocate memory for the data if it exists
+				dataBase = (uint8_t*)mmap(nullptr, pageAlign(data_hdr->sh_size), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+				// Create a duplicate of the data section, no need to change perms
+				memcpy(dataBase, obj.base + data_hdr->sh_offset, data_hdr->sh_size);
+			}
+
+			// Find the rodata entry in the sections table
+			const Elf64_Shdr *rodata_hdr = lookupSection(".rodata");
+			if (rodata_hdr != nullptr)
+			{	// Allocate memory for the rodata if it exists
+				rodataBase = (uint8_t*)mmap(nullptr, pageAlign(rodata_hdr->sh_size), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+				// Create a duplicate of the data section, no need to change perms
+				memcpy(rodataBase, obj.base + rodata_hdr->sh_offset, rodata_hdr->sh_size);
+			}
 		}
 
 	public:
@@ -128,7 +172,7 @@ namespace stegelf
 			// Opens file, loads file into process address space, then parse
 			int fd = open(oPath, O_RDONLY);
 			fstat(fd, &sb);
-			obj.base = (uint8_t*)mmap(NULL, sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+			obj.base = (uint8_t*)mmap(nullptr, sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
 			objsize = sb.st_size;
 			close(fd);
 			parse();
@@ -165,7 +209,7 @@ namespace stegelf
 					if (name == function_name) return textBase + symbols[i].st_value;
 				}
 			}
-			return NULL;
+			return nullptr;
 		}
 
 		// Call this function to insert the contents of this object file into the given image pointed
