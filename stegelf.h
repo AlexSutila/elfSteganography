@@ -35,7 +35,9 @@ namespace stegelf
 			x86_64_PC16      = 13,	/* 16 bit sign extended pc relative */
 			x86_64_8         = 14,	/* Direct 8 bit sign extended  */
 			x86_64_PC8       = 15,	/* 8 bit sign extended pc relative */
-			x86_64_PC64      = 24	/* Place relative 64-bit signed */
+			x86_64_PC64      = 24,	/* Place relative 64-bit signed */
+			x86_64_GOTOFF64  = 25,
+			x86_64_GOTPC32   = 26,
 		};
 		int objsize; // Will contain the full size of the object file in bytes and be used
 		             //		to determine how much space to allocate when extracting binary
@@ -64,7 +66,16 @@ namespace stegelf
 		{
 			return (n + (pageSize - 1)) & ~(pageSize - 1);
 		}
-		// Returns a pointer to the base address of a section given the section name
+		// Returns a poitner to the base address of a section given a section header pointer
+		uint8_t *sectionBase(const Elf64_Shdr *section)
+		{ 	// Subject to change
+			std::string sectionName(shstrtab + section->sh_name);
+			if (sectionName == ".text")   return textBase;
+			if (sectionName == ".data")   return dataBase;
+			if (sectionName == ".rodata") return rodataBase;
+			return nullptr;
+		}
+		// Returns a pointer to the address of a section header given the section name
 		const Elf64_Shdr *lookupSection(std::string name)
 		{
 			for (Elf64_Half i = 0; i < obj.hdr->e_shnum; i++)
@@ -73,6 +84,39 @@ namespace stegelf
 				if (name == sectionName && sections[i].sh_size != 0) return sections + i;
 			}
 			return nullptr;
+		}
+		// After looking at the object dump of a .o file, some relative address operands for calls remain
+		//		all zero. This becomes a problem, as the function is then never called. '.rela.text'
+		//		contains the offsets which need to be overwritten plus the necesssary data to overwrite
+		//		these bytes with the correct addresses.
+		void textRelocations()
+		{	// Subject to change
+			const Elf64_Shdr *rela_text_hdr = lookupSection(".rela.text");
+			if (rela_text_hdr != nullptr)
+			{
+				int numRelocs = rela_text_hdr->sh_size / rela_text_hdr->sh_entsize;
+				const Elf64_Rela *relocations = (Elf64_Rela*)(obj.base + rela_text_hdr->sh_offset);
+				for (int i = 0; i < numRelocs; i++)
+				{
+					int symbolIndex = ELF64_R_SYM(relocations[i].r_info);
+					int relocType = ELF64_R_TYPE(relocations[i].r_info); // See enumeration above
+					// Where in the text to fix the jump/call address
+					uint8_t *patchOffset = textBase + relocations[i].r_offset;
+					// The value of the symbol whose index resides in the realocation entry
+					uint8_t *symbolAddr = sectionBase(&sections[symbols[symbolIndex].st_shndx]) + symbols[symbolIndex].st_value;
+
+					switch (relocType)
+					{
+					case x86_64_64:    // S + A
+						*((uint64_t*)patchOffset) = (uint64_t)(symbolAddr + relocations[i].r_addend);
+						break;
+					case x86_64_PC32:  // S + A - P
+					case x86_64_PLT32: // L + A - P
+						*((uint32_t*)patchOffset) = (uint32_t)(symbolAddr + relocations[i].r_addend - patchOffset);
+						break;
+					}
+				}
+			}
 		}
 		// Initializes the addresses for various tables and sections, important thing is that it finds the
 		//		text section and creates a copy of it that is executable (and readable).
@@ -99,8 +143,12 @@ namespace stegelf
 			if (text_hdr != nullptr)
 			{	// Allocate memory for text if it exists
 				textBase = (uint8_t*)mmap(nullptr, pageAlign(text_hdr->sh_size), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-				// Create duplicate of text section with read and execute permissions
+				// Create duplicate of text section
 				memcpy(textBase, obj.base + text_hdr->sh_offset, text_hdr->sh_size);
+				// Perform all necessary relocations, calculating and replacing blank jump addresses
+				//		with the correct jump addresses
+				textRelocations();
+				// Change permissions to readable and executable
 				mprotect(textBase, pageAlign(text_hdr->sh_size), PROT_READ | PROT_EXEC);
 			}
 
