@@ -1,4 +1,5 @@
 #include <iterator>
+#include <string>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -41,16 +42,13 @@ namespace stegelf
 		{
 			return (n + (pageSize - 1)) & ~(pageSize - 1);
 		}
-		// Return a pointer to the base address of a section given the section name
-		const Elf64_Shdr *lookupSection(const char *name)
+		// Returns a pointer to the base address of a section given the section name
+		const Elf64_Shdr *lookupSection(std::string name)
 		{
-			size_t nameLen = strlen(name);
 			for (Elf64_Half i = 0; i < obj.hdr->e_shnum; i++)
 			{	// Find sh_name in string table that points to string name
-				const char *sectionName = shstrtab + sections[i].sh_name;
-				size_t sectionNameLen = strlen(sectionName);
-				if (nameLen == sectionNameLen && !strcmp(name, sectionName) && sections[i].sh_size)
-						return sections + i;
+				std::string sectionName(shstrtab + sections[i].sh_name);
+				if (name == sectionName && sections[i].sh_size != 0) return sections + i;
 			}
 			return NULL;
 		}
@@ -64,19 +62,29 @@ namespace stegelf
 			// Find sections and section header string tables
 			sections = (const Elf64_Shdr*)(obj.base + obj.hdr->e_shoff);
 			shstrtab = (const char*)(obj.base + sections[obj.hdr->e_shstrndx].sh_offset);
+
 			// Find symbol table in the sections table
 			const Elf64_Shdr *symtab_hdr = lookupSection(".symtab");
 			symbols = (const Elf64_Sym*)(obj.base + symtab_hdr->sh_offset);
 			numSymbols = symtab_hdr->sh_size / symtab_hdr->sh_entsize;
+
 			// Find string table in the sections table
 			const Elf64_Shdr *strtab_hdr = lookupSection(".strtab");
 			strtab = (const char*)(obj.base + strtab_hdr->sh_offset);
+
 			// Find section, create executable + readable copy
 			const Elf64_Shdr *text_hdr = lookupSection(".text");
 			textBase = (uint8_t*)mmap(NULL, pageAlign(text_hdr->sh_size), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 			memcpy(textBase, obj.base + text_hdr->sh_offset, text_hdr->sh_size);
 			mprotect(textBase, pageAlign(text_hdr->sh_size), PROT_READ | PROT_EXEC);
 		}
+
+	public:
+		/*
+			I have decided to make the following two template functions public, as they are template functions
+				for reading and writing different data types to and from the given image, .o files don't have
+				to necessarily be the only thing that is embedded in what ever image you are manipulating :)
+		*/
 
 		// Template function for splitting data types into individual bits and writing each individual
 		//		bit over the least significant bit in an image byte. This takes a pointer to a CImg
@@ -144,20 +152,17 @@ namespace stegelf
 		}
 		// Returns a void pointer to the base address of a function with a given name, cast this
 		//		to the actual function type and jump to it
-		void *lookupFunction(const char *name)
+		void *lookupFunction(std::string name)
 		{
-			size_t name_len = strlen(name);
 			// Loop through symbols
 			for (int i = 0; i < numSymbols; i++)
 			{
+				// If symbols is a function symbol
 				if (ELF64_ST_TYPE(symbols[i].st_info) == STT_FUNC)
 				{
 					// Find st_name in string table to find pointer to the string of the function name
-					const char *function_name = strtab + symbols[i].st_name;
-					size_t function_name_len = strlen(function_name);
-
-					if (name_len == function_name_len && !strcmp(name, function_name))
-						return textBase + symbols[i].st_value;
+					std::string function_name((const char*)(strtab + symbols[i].st_name));
+					if (name == function_name) return textBase + symbols[i].st_value;
 				}
 			}
 			return NULL;
